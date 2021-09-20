@@ -1,0 +1,134 @@
+include <gpiod.h>
+#include <stdio.h>
+#include <unistd.h>
+
+#ifndef CONSUMER
+#define CONSUMER        "gpio-stepper"
+#endif
+
+
+unsigned int all_off[] = {0, 0, 0, 0};
+unsigned int num_full_steps = 4;
+unsigned int full_steps[][4] = {
+        {0, 1, 1, 0},           // --
+        {0, 1, 0, 1},           // -+
+        {1, 0, 0, 1},           // ++
+        {1, 0, 1, 0}            // +-
+};
+unsigned int num_half_steps = 8;
+unsigned int half_steps[][4] = {
+        {0, 1, 1, 0},           // --
+        {0, 1, 0, 0},           // -0
+        {0, 1, 0, 1},           // -+
+        {0, 0, 0, 1},           // 0+
+        {1, 0, 0, 1},           // ++
+        {1, 0, 0, 0},           // +0
+        {1, 0, 1, 0},           // +-
+        {0, 0, 1, 0}            // 0-
+};
+
+
+int main(int argc, char **argv)
+{
+        struct gpiod_chip *chip1 = NULL;
+        struct gpiod_chip *chip3 = NULL;
+        struct gpiod_line_bulk motor1_lines;
+        struct gpiod_line_bulk motor2_lines;
+        struct gpiod_line_bulk switch_lines;
+        int switch_values[2];
+        int ret = -1;
+        unsigned int dt = 1000000 / 500;
+        unsigned int *step_values;
+
+        chip1 = gpiod_chip_open_by_name("gpiochip1");
+        if (!chip1) {
+                perror("Failed to open gpiochip1 controller\n");
+                return -1;
+        }
+        chip3 = gpiod_chip_open_by_name("gpiochip3");
+        if (!chip3) {
+                perror("Failed to open gpiochip3 controller\n");
+                gpiod_chip_close(chip1);
+                return -1;
+        }
+        // screw terminals: M2R, M2L, M1L, M1R
+        // pins: P8.11, P8.12, P9.27, P9.25
+        // gpios: 1.13, 1.12, 3.19, 3.21
+        unsigned int motor2_offsets[] = {13, 12};
+        unsigned int motor1_offsets[] = {19, 21};
+
+        ret = gpiod_chip_get_lines(chip1, motor2_offsets, 2, &motor2_lines);
+        if (ret < 0) {
+                perror("Failed to get motor 2 lines\n");
+                goto close_chips;
+        }
+        ret = gpiod_line_request_bulk_output(&motor2_lines, CONSUMER, all_off);
+        if (ret < 0) {
+                perror("Failed to set motor 2 lines as outputs\n");
+                goto release_motor2;
+        }
+
+        ret = gpiod_chip_get_lines(chip3, motor1_offsets, 2, &motor1_lines);
+        if (ret < 0) {
+                perror("Failed to get motor 1 lines\n");
+                goto release_motor2;
+        }
+        ret = gpiod_line_request_bulk_output(&motor1_lines, CONSUMER, all_off);
+        if (ret < 0) {
+                perror("Failed to set motor 1 lines as outputs\n");
+                goto release_motors;
+        }
+
+        // switches: SW1 (cw), SW2 (ccw)
+        // pins: P8.15, P8.16
+        unsigned int switch_offsets[] = {14, 15};
+        ret = gpiod_chip_get_lines(chip1, switch_offsets, 2, &switch_lines);
+        if (ret < 0) {
+                perror("Failed to get switch lines\n");
+                goto release_motors;
+        }
+        ret = gpiod_line_request_bulk_input(&switch_lines, CONSUMER);
+        if (ret < 0) {
+                perror("Failed to set switch lines as inputs\n");
+                goto release_lines;
+        }
+
+
+        /* To do:
+         * 1. clockwise or counterclockwise
+         * 2. check pin
+         */
+        printf("- initialized GPIOs\n");
+        printf("- step dt=%d us\n", dt);
+        unsigned int step = 0;
+        while(1) {
+                // check switches
+                gpiod_line_get_value_bulk(&switch_lines, switch_values);
+                if (switch_values[0] == 0) {
+                                        step = (step + 1) % num_half_steps;
+                                        step_values = half_steps[step];
+                                }
+                                else if (switch_values[1] == 0) {
+                                        step = (step - 1) % num_half_steps;
+                                        step_values = half_steps[step];
+                                }
+                                else {
+                                        step_values = all_off;
+                                }
+                                gpiod_line_set_value_bulk(&motor2_lines, step_values);
+                                gpiod_line_set_value_bulk(&motor1_lines, step_values + 2);
+                                usleep(dt);
+
+                        }
+
+                release_lines:
+                        gpiod_line_release_bulk(&switch_lines);
+                release_motors:
+                        gpiod_line_release_bulk(&motor1_lines);
+                release_motor2:
+                        gpiod_line_release_bulk(&motor2_lines);
+                close_chips:
+                        gpiod_chip_close(chip3);
+                        gpiod_chip_close(chip1);
+                        return ret;
+}
