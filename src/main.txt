@@ -7,7 +7,7 @@ include <gpiod.h>
 #endif
 
 
-unsigned int all_off[] = {0, 0, 0, 0};
+unsigned int ALL_OFF[] = {0, 0, 0, 0};
 unsigned int num_full_steps = 4;
 unsigned int full_steps[][4] = {
         {0, 1, 1, 0},           // --
@@ -16,7 +16,7 @@ unsigned int full_steps[][4] = {
         {1, 0, 1, 0}            // +-
 };
 unsigned int num_half_steps = 8;
-unsigned int half_steps[][4] = {
+unsigned int HALF_STEPS[][4] = {
         {0, 1, 1, 0},           // --
         {0, 1, 0, 0},           // -0
         {0, 1, 0, 1},           // -+
@@ -55,25 +55,25 @@ int main(int argc, char **argv)
         // pins: P8.11, P8.12, P9.27, P9.25
         // gpios: 1.13, 1.12, 3.19, 3.21
         unsigned int motor2_offsets[] = {13, 12};
-        unsigned int motor1_offsets[] = {19, 21};
+        unsigned int MOTOR1_OFFSETS[] = {19, 21};
 
         ret = gpiod_chip_get_lines(chip1, motor2_offsets, 2, &motor2_lines);
         if (ret < 0) {
                 perror("Failed to get motor 2 lines\n");
                 goto close_chips;
         }
-        ret = gpiod_line_request_bulk_output(&motor2_lines, CONSUMER, all_off);
+        ret = gpiod_line_request_bulk_output(&motor2_lines, CONSUMER, ALL_OFF);
         if (ret < 0) {
                 perror("Failed to set motor 2 lines as outputs\n");
                 goto release_motor2;
         }
 
-        ret = gpiod_chip_get_lines(chip3, motor1_offsets, 2, &motor1_lines);
+        ret = gpiod_chip_get_lines(chip3, MOTOR1_OFFSETS, 2, &motor1_lines);
         if (ret < 0) {
                 perror("Failed to get motor 1 lines\n");
                 goto release_motor2;
         }
-        ret = gpiod_line_request_bulk_output(&motor1_lines, CONSUMER, all_off);
+        ret = gpiod_line_request_bulk_output(&motor1_lines, CONSUMER, ALL_OFF);
         if (ret < 0) {
                 perror("Failed to set motor 1 lines as outputs\n");
                 goto release_motors;
@@ -81,8 +81,8 @@ int main(int argc, char **argv)
 
         // switches: SW1 (cw), SW2 (ccw)
         // pins: P8.15, P8.16
-        unsigned int switch_offsets[] = {14, 15};
-        ret = gpiod_chip_get_lines(chip1, switch_offsets, 2, &switch_lines);
+        unsigned int SWITCH_OFFSETS[] = {14, 15};
+        ret = gpiod_chip_get_lines(chip1, SWITCH_OFFSETS, 2, &switch_lines);
         if (ret < 0) {
                 perror("Failed to get switch lines\n");
                 goto release_motors;
@@ -106,14 +106,14 @@ int main(int argc, char **argv)
                 gpiod_line_get_value_bulk(&switch_lines, switch_values);
                 if (switch_values[0] == 0) {
                                         step = (step + 1) % num_half_steps;
-                                        step_values = half_steps[step];
+                                        step_values = HALF_STEPS[step];
                                 }
                                 else if (switch_values[1] == 0) {
                                         step = (step - 1) % num_half_steps;
-                                        step_values = half_steps[step];
+                                        step_values = HALF_STEPS[step];
                                 }
                                 else {
-                                        step_values = all_off;
+                                        step_values = ALL_OFF;
                                 }
                                 gpiod_line_set_value_bulk(&motor2_lines, step_values);
                                 gpiod_line_set_value_bulk(&motor1_lines, step_values + 2);
