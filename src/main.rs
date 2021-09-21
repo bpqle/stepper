@@ -1,4 +1,8 @@
 use gpio_cdev::{Chip, LineRequestFlags, EventRequestFlags, EventType};
+use quicli::prelude::*;
+use std::thread::sleep;
+use std::time::Duration;
+use structopt::StructOpt;
 
 fn main() {
     let mut chip1 = Chip::new("/dev/gpiochip1");
@@ -17,23 +21,42 @@ fn main() {
 
     let dt = 1000000 / 500;
     let num_half_steps = 8;
-    let mut step_values;
+    let mut step_values: &Vec<i8>;
     let mut step: u8 = 0;
+
+    let all_off :Vec<i8> = vec![0,0,0,0];
+    let _full_steps = vec![
+        vec![0,1,1,0],
+        vec![0,1,0,1],
+        vec![1,0,0,1],
+        vec![1,0,1,0],
+    ];
+    let half_steps: Vec<Vec<i8>> = vec![
+        vec![0,1,1,0],
+        vec![0,1,0,0],
+        vec![0,1,0,1],
+        vec![0,0,0,1],
+        vec![1,0,0,1],
+        vec![1,0,0,0],
+        vec![1,0,1,0],
+        vec![0,0,1,0],
+    ];
 
 
     println!("- initialized GPIOs \n");
     println!("- step dt = {:?} us\n", dt);
 
     loop {
-        let mut switch_values = switch_handle_1.get_values()?;
+        let mut switch_values: Vec<u8> = switch_handle_1.get_values()
+            .expect("Failed to get switch values\n");
         if switch_values[0] == 0 {
             step = (step + 1) % &num_half_steps;
-            step_values = half_steps[&step];
+            step_values = &half_steps[&step];
         } else if  switch_values[1] == 0 {
             step = (step - 1) % &num_half_steps;
-            step_values = half_steps[&step];
+            step_values = &half_steps[&step];
         } else {
-            step_values = all_off;
+            step_values = &all_off;
         }
         motor_handle_1.set_values(&step_values);
         motor_handle_3.set_values(&step_values);
