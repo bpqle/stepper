@@ -1,18 +1,19 @@
 use gpio_cdev::{Chip, LineRequestFlags, EventRequestFlags, EventType, errors::Error as GpioError, MultiLineHandle};
 use thiserror;
+use futures::TryFutureExt;
+use std::{thread, time};
 
 struct LinesValue([u8; 2]);
 pub struct StepperMotorApparatus {
     chip1: Chip,
     chip3: Chip,
-    stepper_motor: StepperMotor,
-    switch: Switch,
+    pub stepper_motor: StepperMotor,
+    pub switch: Switch,
 }
 pub struct StepperMotor {
     motor_1_handle: MultiLineHandle,
     motor_3_handle: MultiLineHandle,
 }
-
 pub struct Switch {
     handle: MultiLineHandle,
 }
@@ -33,13 +34,13 @@ impl StepperMotor {
      ];
 
     pub fn new(chip1: &mut Chip, chip3: &mut Chip) -> Result<Self, Error> {
-        let motor_handle_1 = chip1
+        let motor_1_handle = chip1
             .get_lines(&Self::MOTOR1_OFFSETS)
             .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::MOTOR1_OFFSETS})?
             .request(LineRequestFlags::OUTPUT, &[0,0], "stepper")
             .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::MOTOR1_OFFSETS})?;
 
-        let motor_handle_3 = chip3
+        let motor_3_handle = chip3
             .get_lines(&Self::MOTOR3_OFFSETS)
             .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::MOTOR3_OFFSETS})?
             .request(LineRequestFlags::OUTPUT, &[0,0], "stepper")
@@ -50,23 +51,42 @@ impl StepperMotor {
             motor_3_handle,
         })
     }
-    pub fn set_state(state: State) -> Result<(), Error> {
-        let dt = 1000000 / 500;
+    //TODO: resolve async type future()?
+    pub async fn set_state(&mut self, switch: &mut Switch) -> Result<(), Error> {
+        //let dt = 1000000 / 500;
         let num_half_steps:usize = 8;
         let step_values1: &LinesValue;
         let step_values3: &LinesValue;
         let mut step: usize = 0;
 
+        let state = switch.monitor().await?;
+
         match state {
             State::Forward => {
-
+                step = (step + 1) % &num_half_steps;
+                step_values1 = &Self::HALF_STEPS[step].0;
+                step_values3 = &Self::HALF_STEPS[step].1;
             }
-            State::Backward => {}
+            State::Backward => {
+                step = (step - 1) % &num_half_steps;
+                step_values1 = &Self::HALF_STEPS[step].0;
+                step_values3 = &Self::HALF_STEPS[step].1;
+            }
             State::Stop => {
-                motor_1_handle.set_values
+                step_values1 = &Self::ALL_OFF;
+                step_values3 = &Self::ALL_OFF;
             }
-        }
+        };
+        //TODO: add sleep
+        Ok(
+            &self.motor_1_handle.set_values(&step_values1.0)
+                .map_err(|e:GpioError| Error::LinesSetError {source: e, lines:&Self::MOTOR1_OFFSETS})
+            &self.motor_3_handle.set_values(&step_values3.0)
+                .map_err(|e:GpioError| Error::LinesSetError {source: e, lines:&Self::MOTOR3_OFFSETS})
+        )
+
     }
+
 }
 impl Switch {
     const SWITCH_OFFSETS: [u32;2] = [14,15];
@@ -80,7 +100,12 @@ impl Switch {
             handle
         })
     }
-    pub fn monitor()
+    //TODO: write monitor fn
+    pub async fn monitor(&mut self) -> Result<State, Error> {
+        Ok(
+            State::Forward
+        )
+    }
 }
 impl StepperMotorApparatus {
     pub fn new(chip1 : &str, chip3 : &str) -> Result<Self, Error> {
@@ -108,7 +133,6 @@ pub enum State{
     Backward,
     Stop,
 }
-
 #[derive(Debug)]
 pub enum ChipNumber {
     Chip1,
@@ -128,6 +152,16 @@ pub enum Error {
     },
     #[error("Failed to request lines")]
     LinesReqError {
+        source: GpioError,
+        lines: &'static [u32; 2],
+    },
+    #[error("Failed to set lines")]
+    LinesSetError {
+        source: GpioError,
+        lines: &'static [u32; 2],
+    },
+    #[error("Failed to monitor switch lines")]
+    SwitchMonitorError {
         source: GpioError,
         lines: &'static [u32; 2],
     }
