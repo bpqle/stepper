@@ -1,7 +1,12 @@
-use gpio_cdev::{Chip, LineRequestFlags, EventRequestFlags, EventType, errors::Error as GpioError, MultiLineHandle};
+use gpio_cdev::{Chip, LineRequestFlags, LineEventHandle, EventRequestFlags, EventType, errors::Error as GpioError, MultiLineHandle};
+use tokio::sync::mpsc;
 use thiserror;
-use futures::TryFutureExt;
 use std::{thread, time};
+use std::os::unix::io::AsRawFd;
+use nix::poll::PollFd;
+use structopt::StructOpt;
+use quicli::prelude::*;
+
 
 struct LinesValue([u8; 2]);
 pub struct StepperMotorApparatus {
@@ -52,42 +57,41 @@ impl StepperMotor {
         })
     }
     //TODO: resolve async type future()?
-    pub async fn set_state(&mut self, switch: &mut Switch) -> Result<(), Error> {
+    pub fn set_state(&mut self, state: State) -> Result<(), Error> {
         //let dt = 1000000 / 500;
-        let num_half_steps:usize = 8;
-        let step_values1: &LinesValue;
-        let step_values3: &LinesValue;
-        let mut step: usize = 0;
 
-        let state = switch.monitor().await?;
+            let num_half_steps:usize = 8;
+            let step_values1: &LinesValue;
+            let step_values3: &LinesValue;
+            let mut step: usize = 0;
 
-        match state {
-            State::Forward => {
-                step = (step + 1) % &num_half_steps;
-                step_values1 = &Self::HALF_STEPS[step].0;
-                step_values3 = &Self::HALF_STEPS[step].1;
-            }
-            State::Backward => {
-                step = (step - 1) % &num_half_steps;
-                step_values1 = &Self::HALF_STEPS[step].0;
-                step_values3 = &Self::HALF_STEPS[step].1;
-            }
-            State::Stop => {
-                step_values1 = &Self::ALL_OFF;
-                step_values3 = &Self::ALL_OFF;
-            }
-        };
-        //TODO: add sleep
-        Ok(
-            &self.motor_1_handle.set_values(&step_values1.0)
-                .map_err(|e:GpioError| Error::LinesSetError {source: e, lines:&Self::MOTOR1_OFFSETS})
-            &self.motor_3_handle.set_values(&step_values3.0)
-                .map_err(|e:GpioError| Error::LinesSetError {source: e, lines:&Self::MOTOR3_OFFSETS})
-        )
+            match state {
+                State::Forward => {
+                    step = (step + 1) % &num_half_steps;
+                    step_values1 = &Self::HALF_STEPS[step].0;
+                    step_values3 = &Self::HALF_STEPS[step].1;
+                }
+                State::Backward => {
+                    step = (step - 1) % &num_half_steps;
+                    step_values1 = &Self::HALF_STEPS[step].0;
+                    step_values3 = &Self::HALF_STEPS[step].1;
+                }
+                State::Stop => {
+                    step_values1 = &Self::ALL_OFF;
+                    step_values3 = &Self::ALL_OFF;
+                }
+            };
+            //TODO: add sleep
+            Ok(
+                &self.motor_1_handle.set_values(&step_values1.0)
+                    .map_err(|e:GpioError| Error::LinesSetError {source: e, lines:&Self::MOTOR1_OFFSETS})
+                &self.motor_3_handle.set_values(&step_values3.0)
+                    .map_err(|e:GpioError| Error::LinesSetError {source: e, lines:&Self::MOTOR3_OFFSETS})
+            )
 
     }
-
 }
+
 impl Switch {
     const SWITCH_OFFSETS: [u32;2] = [14,15];
     pub fn new(chip1: &mut Chip) -> Result<Self, Error> {
@@ -100,11 +104,38 @@ impl Switch {
             handle
         })
     }
-    //TODO: write monitor fn
-    pub async fn monitor(&mut self) -> Result<State, Error> {
-        Ok(
-            State::Forward
-        )
+    pub async fn gpio_monitor(apparatus: &mut StepperMotorApparatus, num_events: u32) -> Result<State, Error> {
+        let mut evt_handles: Vec<LineEventHandle> = Self::SWITCH_OFFSETS
+            .into_iter()
+            .map(|offset| {
+                let line = apparatus.chip1.get_line(offset)
+                    .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::SWITCH_OFFSETS})?;
+                line.events(
+                    LineRequestFlags::INPUT,
+                    EventRequestFlags::BOTH_EDGES,
+                    "monitor",
+                )
+                    .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::SWITCH_OFFSETS})?;
+            })
+            .collect();
+
+        // Create a vector of file descriptors for polling
+        let mut pollfds: Vec<PollFd> = evt_handles
+            .into_iter()
+            .map(|handle| {
+                PollFd::new(
+                    handle.as_raw_fd(),
+                    PollEventFlags::POLLIN | PollEventFlags::POLLPRI,
+                )
+            })
+            .collect();
+
+        let (mon_transmit, mon_receive) = mpsc::channel(100);
+
+        while let Some(evt) = mon_receive.recv().await {
+            tokio::spawn()
+        }
+
     }
 }
 impl StepperMotorApparatus {

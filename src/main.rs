@@ -11,9 +11,7 @@ fn main() {
     println!("- step dt = {:?} us\n", dt);
 
    loop {
-       stepper::StepperMotor
-           .set_state(switch = stepper::Switch).await
-           .expect("set_state failed");
+
    }
 
 }
