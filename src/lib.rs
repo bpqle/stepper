@@ -6,8 +6,8 @@ use gpio_cdev::{Chip,
 use tokio::{task::JoinHandle,
             sync::{oneshot, mpsc}};
 use thiserror;
-use std::{thread,
-          time,
+use std::{//thread,
+          //time,
           sync::{Arc,
                  atomic::{AtomicI8, Ordering}}};
 use futures::{pin_mut, TryFutureExt};
@@ -68,7 +68,7 @@ impl StepperMotor {
     pub async fn set_state(self: &mut Arc<Self>, state_atm: Arc<AtomicI8>) -> Result<JoinHandle<()>, Error> {
 
         let self_clone = self.clone();
-        let mut state_clone = state_atm.clone();
+        //let mut state_clone = Arc::clone(&state_atm);
 
         let set_state_handle = tokio::spawn(async move {
             //let dt = 1000000 / 500;
@@ -78,12 +78,15 @@ impl StepperMotor {
             let mut step: usize = 0;
 
             loop {
+                println!("starting motors!");
                 self_clone.motor_1_handle.set_values(&step_values1.0)
-                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS });
+                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
+                    .unwrap();
                 self_clone.motor_3_handle.set_values(&step_values3.0)
-                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS });
+                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
+                    .unwrap();
 
-                match state_clone.fetch_add(0, Ordering::Relaxed) {
+                match state_atm.fetch_add(0, Ordering::Relaxed) {
                     1 => {
                         step = (step + 1) % &num_half_steps;
                         step_values1 = &Self::HALF_STEPS[step].0;
@@ -99,13 +102,13 @@ impl StepperMotor {
                         step_values3 = &Self::ALL_OFF;
                     }
                     _ => ()
-                }
+                };
+                //println!("state changed to {:?}!", state_atm.clone());
             }
         });
         Ok(set_state_handle)
     }
 }
-
 impl Switch {
     const SWITCH_OFFSETS: [u32;2] = [14,15];
     pub fn new(chip1: &mut Chip) -> Result<Self, Error> {
