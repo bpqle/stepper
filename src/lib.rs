@@ -9,7 +9,7 @@ use thiserror;
 use std::{//thread,
           //time,
           sync::{Arc,
-                 atomic::{AtomicI8, Ordering}}};
+                 atomic::{AtomicI8, AtomicUsize, Ordering}}};
 use futures::{pin_mut, TryFutureExt};
 //use std::os::unix::io::AsRawFd;
 //use nix::poll::PollFd;
@@ -27,6 +27,7 @@ pub struct StepperMotorApparatus {
 pub struct StepperMotor {
     motor_1_handle: MultiLineHandle,
     motor_3_handle: MultiLineHandle,
+    step: Arc<AtomicUsize>,
 }
 pub struct Switch {
     handle: MultiLineHandle,
@@ -60,14 +61,28 @@ impl StepperMotor {
             .request(LineRequestFlags::OUTPUT, &[0,0], "stepper")
             .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::MOTOR3_OFFSETS})?;
 
+        let step = Arc::new(AtomicUsize::new(0));
+
+
         Ok(StepperMotor {
             motor_1_handle,
             motor_3_handle,
+            step,
         })
     }
-    pub async fn set_state(self: &mut Arc<Self>, state_atm: Arc<AtomicI8>) -> Result<JoinHandle<()>, Error> {
+    pub async fn run_motor(&mut self) -> Result<(), Error>{
+        println!("Changing state of motors!");
+        self.motor_1_handle.set_values(&step_values1.0)
+            .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
+            .unwrap();
+        self.motor_3_handle.set_values(&step_values3.0)
+            .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
+            .unwrap();    
+        Ok(())
+    }
+    pub async fn set_state(&'static mut self, state_atm: Arc<AtomicI8>) -> Result<JoinHandle<()>, Error> {
 
-        let self_clone = self.clone();
+        //let self_clone = self.clone();
         //let mut state_clone = Arc::clone(&state_atm);
 
         let set_state_handle = tokio::spawn(async move {
@@ -75,40 +90,36 @@ impl StepperMotor {
             let num_half_steps: usize = 8;
             let mut step_values1 = &Self::ALL_OFF;
             let mut step_values3 = &Self::ALL_OFF;
-            let mut step: usize = 0;
+            let mut step = Arc::clone(&self.step);
+            let mut pos: usize;
 
-            loop {
-                println!("starting motors!");
-                self_clone.motor_1_handle.set_values(&step_values1.0)
-                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
-                    .unwrap();
-                self_clone.motor_3_handle.set_values(&step_values3.0)
-                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
-                    .unwrap();
+            match state_atm.fetch_add(0, Ordering::Relaxed) {
+                1 => {
+                    pos = step.fetch_and(1, Ordering::Relaxed) % &num_half_steps;
+                    step_values1 = &Self::HALF_STEPS[pos].0;
+                    step_values3 = &Self::HALF_STEPS[pos].1;
+                    println!("state changed to {:?}!", state_atm.clone());
+                }
+                -1 => {
+                    pos = step.fetch_sub(1, Ordering::Relaxed) % &num_half_steps;
+                    step_values1 = &Self::HALF_STEPS[pos].0;
+                    step_values3 = &Self::HALF_STEPS[pos].1;
+                    println!("state changed to {:?}!", state_atm.clone());
+                }
+                0 => {
+                    step_values1 = &Self::ALL_OFF;
+                    step_values3 = &Self::ALL_OFF;
+                    println!("state changed to {:?}!", state_atm.clone());
+                }
+                _ => ()
+            };
 
-                match state_atm.fetch_add(0, Ordering::Relaxed) {
-                    1 => {
-                        step = (step + 1) % &num_half_steps;
-                        step_values1 = &Self::HALF_STEPS[step].0;
-                        step_values3 = &Self::HALF_STEPS[step].1;
-                    }
-                    -1 => {
-                        step = (step - 1) % &num_half_steps;
-                        step_values1 = &Self::HALF_STEPS[step].0;
-                        step_values3 = &Self::HALF_STEPS[step].1;
-                    }
-                    0 => {
-                        step_values1 = &Self::ALL_OFF;
-                        step_values3 = &Self::ALL_OFF;
-                    }
-                    _ => ()
-                };
-                //println!("state changed to {:?}!", state_atm.clone());
-            }
+
         });
         Ok(set_state_handle)
     }
 }
+
 impl Switch {
     const SWITCH_OFFSETS: [u32;2] = [14,15];
     pub fn new(chip1: &mut Chip) -> Result<Self, Error> {
