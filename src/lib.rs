@@ -5,15 +5,17 @@ use gpio_cdev::{Chip,
                 errors::Error as GpioError
 };
 use tokio::{task::JoinHandle,
+            time::Duration,
             //sync::{oneshot, mpsc}
 };
 use thiserror;
 use std::{//thread,
-          //time,
+
           sync::{Arc, Mutex,
                  atomic::{AtomicI8, AtomicUsize, Ordering}}
 };
 use futures::{pin_mut, TryFutureExt};
+use std::fs::File;
 //use std::os::unix::io::AsRawFd;
 //use nix::poll::PollFd;
 //use structopt::StructOpt;
@@ -28,9 +30,9 @@ pub struct StepperMotorApparatus {
     pub switch: Switch,
 }
 pub struct StepperMotor {
-    motor_1_handle: Arc<Mutex<MultiLineHandle>>,
-    motor_3_handle: Arc<Mutex<MultiLineHandle>>,
-    step: Arc<Mutex<usize>>,
+    //motor_1_handle: Arc<Mutex<MultiLineHandle>>,
+    //motor_3_handle: Arc<Mutex<MultiLineHandle>>,
+    state: Arc<Mutex<State>>,
 }
 pub struct Switch {
     handle: MultiLineHandle,
@@ -41,7 +43,7 @@ impl StepperMotor {
      const MOTOR3_OFFSETS: [u32;2] = [19,21];
      const ALL_OFF: LinesValue = LinesValue([0,0]);
      const NUM_HALF_STEPS: usize = 8;
-     const DT: i32 = 1000000/500;
+     const DT: u64 = 1000000/500;
 
      const HALF_STEPS: [(LinesValue, LinesValue); 8] = [
         (LinesValue([0,1]),LinesValue([1,0])),
@@ -69,58 +71,79 @@ impl StepperMotor {
             .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::MOTOR3_OFFSETS})?;
         let motor_3_handle = Arc::new(Mutex::new(motor_3_handle));
 
-        let step: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::default()));
+
+        Self::run_motor(motor_1_handle, motor_3_handle, &state);
 
         Ok(StepperMotor {
-            motor_1_handle,
-            motor_3_handle,
-            step
+            state
         })
     }
 
-    pub async fn set_state(&mut self, state_arc: &Arc<Mutex<State>>) -> Result<(), Error> {
-        println!("Starting s-state");
-        let m1_handle = Arc::clone(&self.motor_1_handle);
-        let m3_handle = Arc::clone(&self.motor_3_handle);
-        let step = Arc::clone(&self.step);
-        let state_arc = Arc::clone(state_arc);
+    async fn run_motor(m1_handle:Arc<Mutex<MultiLineHandle>>, m3_handle: Arc<Mutex<MultiLineHandle>>, state_arc: &Arc<Mutex<State>>)
+        -> Result<(), Error> {
 
-        //let stepper_tk_handle =
-            tokio::spawn(async move {
+        let state = Arc::clone(state_arc);
+        let m1_handle = Arc::clone(&m1_handle);
+        let m3_handle = Arc::clone(&m3_handle);
+        let mut step: usize = 0;
+
+        tokio::spawn(async move {
 
             let mut step_values1 = &Self::ALL_OFF;
             let mut step_values3 = &Self::ALL_OFF;
-            let mut state = state_arc.lock().unwrap();
-            let mut step = step.lock().unwrap();
 
-            match *state {
-                State::Forward => {
-                    *step = (*step + 1) % &Self::NUM_HALF_STEPS;
-                    step_values1 = &Self::HALF_STEPS[*step].0;
-                    step_values3 = &Self::HALF_STEPS[*step].1;
-                }
-                State::Backward => {
-                    *step = (*step - 1) % &Self::NUM_HALF_STEPS;
-                    step_values1 = &Self::HALF_STEPS[*step].0;
-                    step_values3 = &Self::HALF_STEPS[*step].1;
-                }
-                State::Stop => {
-                    step_values1 = &Self::ALL_OFF;
-                    step_values3 = &Self::ALL_OFF;
-                }
+            loop {
+                let mut state = state.lock().unwrap();
+
+
+                match *state {
+                    State::Forward => {
+                        step = (step + 1) % &Self::NUM_HALF_STEPS;
+                        step_values1 = &Self::HALF_STEPS[step].0;
+                        step_values3 = &Self::HALF_STEPS[step].1;
+                    }
+                    State::Backward => {
+                        step = (step - 1) % &Self::NUM_HALF_STEPS;
+                        step_values1 = &Self::HALF_STEPS[step].0;
+                        step_values3 = &Self::HALF_STEPS[step].1;
+                    }
+                    State::Stop => {
+                        step_values1 = &Self::ALL_OFF;
+                        step_values3 = &Self::ALL_OFF;
+                    }
+                };
+
+                let m1_handle = m1_handle.lock().unwrap();
+                let m3_handle = m3_handle.lock().unwrap();
+                m1_handle.set_values(&step_values1.0)
+                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
+                    .unwrap();
+                m3_handle.set_values(&step_values3.0)
+                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(*&Self::DT));
+                let mut file = File::create("foo.txt").unwrap();
             };
-
-            println!("Changing state of motors!");
-            let m1_handle = m1_handle.lock().unwrap();
-            let m3_handle = m3_handle.lock().unwrap();
-            m1_handle.set_values(&step_values1.0)
-                .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
-                .unwrap();
-            m3_handle.set_values(&step_values3.0)
-                .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
-                .unwrap();
         });
+        Ok(())
+    }
 
+    pub fn set_state(&mut self, new_state: State) -> Result<(), Error> {
+        let mut motor_state = Arc::clone(&self.state);
+        let mut motor_state = motor_state.lock().unwrap();
+
+        match new_state {
+            State::Forward => {
+                *motor_state = State::Forward;
+            }
+            State::Backward => {
+                *motor_state = State::Backward;
+            }
+            State::Stop => {
+                *motor_state = State::Stop;
+            }
+        }
         Ok(())
     }
 }
@@ -164,6 +187,11 @@ pub enum State{
     Forward,
     Backward,
     Stop,
+}
+impl Default for State{
+    fn default() -> Self {
+        State::Stop
+    }
 }
 #[derive(Debug)]
 pub enum ChipNumber {
