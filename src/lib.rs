@@ -2,14 +2,17 @@ use gpio_cdev::{Chip,
                 LineRequestFlags, LineEventHandle,
                 MultiLineHandle,
                 EventRequestFlags, EventType,
-                errors::Error as GpioError};
+                errors::Error as GpioError
+};
 use tokio::{task::JoinHandle,
-            sync::{oneshot, mpsc}};
+            //sync::{oneshot, mpsc}
+};
 use thiserror;
 use std::{//thread,
           //time,
           sync::{Arc, Mutex,
-                 atomic::{AtomicI8, AtomicUsize, Ordering}}};
+                 atomic::{AtomicI8, AtomicUsize, Ordering}}
+};
 use futures::{pin_mut, TryFutureExt};
 //use std::os::unix::io::AsRawFd;
 //use nix::poll::PollFd;
@@ -27,7 +30,7 @@ pub struct StepperMotorApparatus {
 pub struct StepperMotor {
     motor_1_handle: Arc<Mutex<MultiLineHandle>>,
     motor_3_handle: Arc<Mutex<MultiLineHandle>>,
-    step: Arc<Mutex<isize>>,
+    step: Arc<Mutex<usize>>,
 }
 pub struct Switch {
     handle: MultiLineHandle,
@@ -66,7 +69,7 @@ impl StepperMotor {
             .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::MOTOR3_OFFSETS})?;
         let motor_3_handle = Arc::new(Mutex::new(motor_3_handle));
 
-        let step: Arc<Mutex<isize>> = Arc::new(Mutex::new(0));
+        let step: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 
         Ok(StepperMotor {
             motor_1_handle,
@@ -75,35 +78,31 @@ impl StepperMotor {
         })
     }
 
-    fn run_motor(&mut self) -> Result<(), Error>{
-
-        Ok(())
-    }
-
-    pub async fn set_state(&mut self, state_arc: &Arc<Mutex<State>>) -> Result<JoinHandle<()>, Error> {
-
+    pub async fn set_state(&mut self, state_arc: &Arc<Mutex<State>>) -> Result<(), Error> {
+        println!("Starting s-state");
         let m1_handle = Arc::clone(&self.motor_1_handle);
         let m3_handle = Arc::clone(&self.motor_3_handle);
         let step = Arc::clone(&self.step);
         let state_arc = Arc::clone(state_arc);
 
-        let stepper_tk_handle = tokio::spawn(async move || {
+        //let stepper_tk_handle =
+            tokio::spawn(async move {
 
             let mut step_values1 = &Self::ALL_OFF;
             let mut step_values3 = &Self::ALL_OFF;
             let mut state = state_arc.lock().unwrap();
             let mut step = step.lock().unwrap();
 
-            match *state.get_mut() {
+            match *state {
                 State::Forward => {
-                    *step = (*step + 1) % &num_half_steps;
-                    step_values1 = &Self::HALF_STEPS[&step].0;
-                    step_values3 = &Self::HALF_STEPS[&step].1;
+                    *step = (*step + 1) % &Self::NUM_HALF_STEPS;
+                    step_values1 = &Self::HALF_STEPS[*step].0;
+                    step_values3 = &Self::HALF_STEPS[*step].1;
                 }
                 State::Backward => {
-                    *step = (*step - 1) % &num_half_steps;
-                    step_values1 = &Self::HALF_STEPS[&step].0;
-                    step_values3 = &Self::HALF_STEPS[&step].1;
+                    *step = (*step - 1) % &Self::NUM_HALF_STEPS;
+                    step_values1 = &Self::HALF_STEPS[*step].0;
+                    step_values3 = &Self::HALF_STEPS[*step].1;
                 }
                 State::Stop => {
                     step_values1 = &Self::ALL_OFF;
@@ -122,7 +121,7 @@ impl StepperMotor {
                 .unwrap();
         });
 
-        Ok(stepper_tk_handle)
+        Ok(())
     }
 }
 
