@@ -908,6 +908,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "gpio-cdev",
+ "lazy_static",
  "nix 0.22.1",
  "quicli",
  "structopt 0.3.23",
