@@ -10,14 +10,18 @@ use tokio::{task::JoinHandle,
 };
 use thiserror;
 use std::{//thread,
-
           sync::{Arc, Mutex,
                  atomic::{AtomicI8, AtomicUsize, Ordering}}
 };
 use futures::{pin_mut, TryFutureExt};
 use std::fs::File;
+use nix::poll::*;
+use quicli::prelude::*;
+use std::os::unix::io::AsRawFd;
+use std::task::Poll;
+use nix::poll::PollFd;
 
-
+type PollEventFlags = nix::poll::PollFlags;
 
 struct LinesValue([u8; 2]);
 pub struct StepperMotorApparatus {
@@ -27,13 +31,11 @@ pub struct StepperMotorApparatus {
     pub switch: Switch,
 }
 pub struct StepperMotor {
-    //motor_1_handle: Arc<Mutex<MultiLineHandle>>,
-    //motor_3_handle: Arc<Mutex<MultiLineHandle>>,
     pub state: Arc<Mutex<State>>,
     pub state_txt: Arc<Mutex<String>>,
 }
 pub struct Switch {
-    handle: MultiLineHandle,
+    evt_handles: Vec<LineEventHandle>,
 }
 
 impl StepperMotor {
@@ -152,14 +154,61 @@ impl StepperMotor {
 impl Switch {
     const SWITCH_OFFSETS: [u32;2] = [14,15];
     pub fn new(chip1: &mut Chip) -> Result<Self, Error> {
-        let handle = chip1
-            .get_lines(&Self::SWITCH_OFFSETS)
-            .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::SWITCH_OFFSETS})?
-            .request(LineRequestFlags::INPUT, &[0,0], "stepper")
-            .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::SWITCH_OFFSETS})?;
+        let mut evt_handles: Vec<LineEventHandle> = (&Self::SWITCH_OFFSETS).iter()
+            .map(|&offset|{
+                let handle = chip1.get_line(offset)
+                    .map_err(|e:GpioError| Error::LineGetError {source:e, line: offset}).unwrap();
+                handle.events(LineRequestFlags::INPUT,
+                              EventRequestFlags::BOTH_EDGES,
+                              "switch_ctrl").unwrap()
+            }).collect();
+
         Ok(Self{
-            handle
+            evt_handles
         })
+    }
+    pub async fn switch_ctrl(&mut self, motor: &mut StepperMotor) -> Result<(), Error> {
+
+        let evt_handles_arc = Arc::new(Mutex::new(&self.evt_handles));
+        let motor_arc = Arc::new(Mutex::new(motor));
+
+        tokio::spawn(async move {
+            let evt_handles = evt_handles_arc.lock().unwrap();
+            let mut motor = motor_arc.lock().unwrap();
+            let mut pollfds: Vec<PollFd> = evt_handles.iter()
+                .map(|handle| {
+                    PollFd::new(
+                        handle.as_raw_fd(),
+                        PollEventFlags::POLLIN | PollEventFlags::POLLPRI,
+                    )
+                })
+                .collect();
+            loop {
+                if poll(&mut pollfds, -1).unwrap() == 0 {
+                    println!("Timeout");
+                } else {
+                    for line in 0..pollfds.len() {
+                        if let Some(revents) = pollfds[line].revents() {
+                            let handle = &mut evt_handles[line];
+                            if revents.contains(PollEventFlags::POLLIN) {
+                                let event = handle.get_event().unwrap().event_type();
+                                match event {
+                                    EventType::RisingEdge => {
+                                        match handle.line().offset() {
+                                            14 => {motor.set_state(State::Backward)}
+                                            15 => {motor.set_state(State::Forward)}
+                                            _ => {println!("Invalid switch line match value")}
+                                        }
+                                    }
+                                    EventType::FallingEdge => {motor.set_state(State::Stop)}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
     }
 }
 
@@ -205,6 +254,16 @@ pub enum Error {
     ChipError {
         source: GpioError,
         chip: ChipNumber,
+    },
+    #[error("Failed to get line")]
+    LineGetError {
+        source: GpioError,
+        line: u32,
+    },
+    #[error("Failed to request line")]
+    LineReqError {
+        source: GpioError,
+        line: u32,
     },
     #[error("Failed to get lines")]
     LinesGetError {
