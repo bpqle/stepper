@@ -27,25 +27,30 @@ struct LinesValue([u8; 2]);
 pub struct StepperMotorApparatus {
     chip1: Chip,
     chip3: Chip,
-    pub stepper_motor: StepperMotor,
-    pub switch: Switch,
+    pub stepper_motor: StepperMotor_arc,
+    pub switch: Switch_arc,
 }
 pub struct StepperMotor {
-    pub state: Arc<Mutex<State>>,
-    pub state_txt: Arc<Mutex<String>>,
+    state: Arc<Mutex<State>>,
+    state_txt: Arc<Mutex<String>>,
+}
+pub struct StepperMotor_arc {
+    pub stepper_motor: Arc<Mutex<StepperMotor>>
 }
 pub struct Switch {
     evt_handles: Vec<LineEventHandle>,
 }
+pub struct Switch_arc {
+    pub switch: Arc<Mutex<Switch>>
+}
 
 impl StepperMotor {
-     const MOTOR1_OFFSETS: [u32;2] = [13,12];
-     const MOTOR3_OFFSETS: [u32;2] = [19,21];
-     const ALL_OFF: LinesValue = LinesValue([0,0]);
-     const NUM_HALF_STEPS: usize = 8;
-     const DT: u64 = 1000000/500;
-
-     const HALF_STEPS: [(LinesValue, LinesValue); 8] = [
+    const MOTOR1_OFFSETS: [u32;2] = [13,12];
+    const MOTOR3_OFFSETS: [u32;2] = [19,21];
+    const ALL_OFF: LinesValue = LinesValue([0,0]);
+    const NUM_HALF_STEPS: usize = 8;
+    const DT: u64 = 1000000/500;
+    const HALF_STEPS: [(LinesValue, LinesValue); 8] = [
         (LinesValue([0,1]),LinesValue([1,0])),
         (LinesValue([0,1]),LinesValue([0,0])),
         (LinesValue([0,1]),LinesValue([0,1])),
@@ -54,9 +59,9 @@ impl StepperMotor {
         (LinesValue([1,0]),LinesValue([0,0])),
         (LinesValue([1,0]),LinesValue([1,0])),
         (LinesValue([0,0]),LinesValue([1,0]))
-     ];
+    ];
 
-    pub async fn new(chip1: &mut Chip, chip3: &mut Chip) -> Result<Self, Error> {
+    async fn new(chip1: &mut Chip, chip3: &mut Chip) -> Result<Self, Error> {
         let motor_1_handle = chip1
             .get_lines(&Self::MOTOR1_OFFSETS)
             .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::MOTOR1_OFFSETS})?
@@ -72,7 +77,7 @@ impl StepperMotor {
 
         Self::run_motor(motor_1_handle, motor_3_handle, &state, &state_txt).await.unwrap();
 
-        Ok(StepperMotor {
+        Ok(StepperMotor{
             state,
             state_txt
         })
@@ -126,13 +131,9 @@ impl StepperMotor {
         });
         Ok(())
     }
-
-    pub fn set_state(&mut self, new_state: State) -> Result<(), Error> {
+    pub fn set_state(&mut self, new_state:State) -> Result<(), Error> {
         let mut motor_state = Arc::clone(&self.state);
         let mut motor_state = motor_state.lock().unwrap();
-        //let mut state_txt = Arc::clone(&self.state_txt);
-        //let mut state_txt = state_txt.lock().unwrap();
-
         match new_state {
             State::Forward => {
                 //*state_txt = String::from("Forward");
@@ -150,10 +151,19 @@ impl StepperMotor {
         Ok(())
     }
 }
+impl StepperMotor_arc{
+    pub async fn new(chip1: &mut Chip, chip3: &mut Chip) -> Result<Self, Error> {
+        let steppermotor = StepperMotor::new(chip1, chip3).await.unwrap();
+        Ok(StepperMotor_arc{
+            stepper_motor: Arc::new(Mutex::new(steppermotor)),
+            })
+    }
+
+}
 
 impl Switch {
     const SWITCH_OFFSETS: [u32;2] = [14,15];
-    pub fn new(chip1: &mut Chip) -> Result<Self, Error> {
+    fn new(chip1: &mut Chip) -> Result<Self, Error> {
         let mut evt_handles: Vec<LineEventHandle> = (&Self::SWITCH_OFFSETS).iter()
             .map(|&offset|{
                 let handle = chip1.get_line(offset)
@@ -167,13 +177,21 @@ impl Switch {
             evt_handles
         })
     }
-    pub async fn switch_ctrl(&mut self, motor: &mut StepperMotor) -> Result<(), Error> {
+}
+impl Switch_arc {
+    pub fn new(chip1: &mut Chip) -> Result<Self, Error> {
+        let switch = Switch::new(chip1).unwrap();
+        Ok(Self {
+            switch: Arc::new(Mutex::new(switch))
+        })
+    }
+    pub async fn switch_ctrl(&mut self, motor: &mut StepperMotor_arc) -> Result<(), Error> {
 
-        let evt_handles_arc = Arc::new(Mutex::new(&self.evt_handles));
-        let motor_arc = Arc::new(Mutex::new(motor));
+        let switch_arc = Arc::clone(&self.switch);
+        let motor_arc = Arc::clone(&motor.stepper_motor);
 
         tokio::spawn(async move {
-            let evt_handles = evt_handles_arc.lock().unwrap();
+            let mut evt_handles = &switch_arc.lock().unwrap().evt_handles;
             let mut motor = motor_arc.lock().unwrap();
             let mut pollfds: Vec<PollFd> = evt_handles.iter()
                 .map(|handle| {
@@ -189,18 +207,18 @@ impl Switch {
                 } else {
                     for line in 0..pollfds.len() {
                         if let Some(revents) = pollfds[line].revents() {
-                            let handle = &mut evt_handles[line];
+                            let handle = &evt_handles[line];
                             if revents.contains(PollEventFlags::POLLIN) {
                                 let event = handle.get_event().unwrap().event_type();
                                 match event {
                                     EventType::RisingEdge => {
                                         match handle.line().offset() {
-                                            14 => {motor.set_state(State::Backward)}
-                                            15 => {motor.set_state(State::Forward)}
-                                            _ => {println!("Invalid switch line match value")}
-                                        }
+                                            14 => {motor.set_state(State::Backward);}
+                                            15 => {motor.set_state(State::Forward);}
+                                            _ => {println!("Invalid switch line match value");}
+                                        };
                                     }
-                                    EventType::FallingEdge => {motor.set_state(State::Stop)}
+                                    EventType::FallingEdge => {motor.set_state(State::Stop);}
                                 }
                             }
                         }
@@ -213,7 +231,7 @@ impl Switch {
 }
 
 impl StepperMotorApparatus {
-    pub async fn new(chip1 : &str, chip3 : &str) -> Result<Self, Error> {
+    pub async fn new(chip1 : &str, chip3 : &str) -> Result<Arc<Mutex<Self>>, Error> {
         let mut chip1 = Chip::new(chip1).map_err( |e:GpioError|
             Error::ChipError {source: e,
                 chip: ChipNumber::Chip1}
@@ -222,14 +240,15 @@ impl StepperMotorApparatus {
             Error::ChipError {source: e,
                 chip: ChipNumber::Chip3}
         )?;
-        let stepper_motor = StepperMotor::new(&mut chip1, &mut chip3).await?;
-        let switch = Switch::new(&mut chip1)?;
-        Ok(StepperMotorApparatus{
+        let stepper_motor = StepperMotor_arc::new(&mut chip1, &mut chip3).await?;
+        let switch = Switch_arc::new(&mut chip1)?;
+        let apparatus = Arc::new(Mutex::new(StepperMotorApparatus{
             chip1,
             chip3,
             stepper_motor,
-            switch,
-        })
+            switch
+        }));
+        Ok(apparatus)
     }
 }
 
