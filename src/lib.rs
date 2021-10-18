@@ -85,7 +85,7 @@ impl StepperMotor {
         let state_txt = Arc::clone(&state_txt);
 
         tokio::spawn(async move {
-
+            println!("Spawning task 1");
             let mut step_values1 = &Self::ALL_OFF;
             let mut step_values3 = &Self::ALL_OFF;
             let mut step: usize = 0;
@@ -120,6 +120,7 @@ impl StepperMotor {
                 m3_handle.set_values(&step_values3.0)
                     .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
                     .unwrap();
+                println!("sleepy time task 1");
                 tokio::time::sleep(Duration::from_millis(*&Self::DT));
                 //let mut file = File::create("foo.txt").unwrap();
             };
@@ -130,8 +131,6 @@ impl StepperMotor {
     pub fn set_state(&mut self, new_state: State) -> Result<(), Error> {
         let mut motor_state = Arc::clone(&self.state);
         let mut motor_state = motor_state.lock().unwrap();
-        //let mut state_txt = Arc::clone(&self.state_txt);
-        //let mut state_txt = state_txt.lock().unwrap();
 
         match new_state {
             State::Forward => {
@@ -167,15 +166,10 @@ impl Switch {
             evt_handles
         })
     }
-    pub async fn switch_ctrl(&mut self, motor: &mut StepperMotor) -> Result<(), Error> {
-
-        let evt_handles_arc = Arc::new(Mutex::new(&self.evt_handles));
-        let motor_arc = Arc::new(Mutex::new(motor));
-
+    pub async fn switch_ctrl(self, mut motor: StepperMotor) -> Result<(), Error> {
         tokio::spawn(async move {
-            let evt_handles = evt_handles_arc.lock().unwrap();
-            let mut motor = motor_arc.lock().unwrap();
-            let mut pollfds: Vec<PollFd> = evt_handles.iter()
+            println!("spawning task 2");
+            let mut pollfds: Vec<PollFd> = self.evt_handles.iter()
                 .map(|handle| {
                     PollFd::new(
                         handle.as_raw_fd(),
@@ -189,18 +183,18 @@ impl Switch {
                 } else {
                     for line in 0..pollfds.len() {
                         if let Some(revents) = pollfds[line].revents() {
-                            let handle = &mut evt_handles[line];
+                            let handle = &self.evt_handles[line];
                             if revents.contains(PollEventFlags::POLLIN) {
                                 let event = handle.get_event().unwrap().event_type();
                                 match event {
                                     EventType::RisingEdge => {
                                         match handle.line().offset() {
-                                            14 => {motor.set_state(State::Backward)}
-                                            15 => {motor.set_state(State::Forward)}
+                                            14 => {motor.set_state(State::Backward).unwrap()}
+                                            15 => {motor.set_state(State::Forward).unwrap()}
                                             _ => {println!("Invalid switch line match value")}
                                         }
                                     }
-                                    EventType::FallingEdge => {motor.set_state(State::Stop)}
+                                    EventType::FallingEdge => {motor.set_state(State::Stop).unwrap()}
                                 }
                             }
                         }
