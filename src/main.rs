@@ -15,13 +15,11 @@ use gpio_cdev::{Chip,
 async fn main() {
    let mut stepper = StepperMotorApparatus::new("/dev/gpiochip1", "/dev/gpiochip3").await
        .expect("StepperMotorApparatus Failed");
-    stepper.lock().unwrap()
-        .switch.switch_ctrl(
-            &mut stepper.try_lock().unwrap().stepper_motor).await.unwrap();
+    stepper.switch_ctrl().await.unwrap();
 
-   loop {
-      println!("busy work in main thread");
-       thread::sleep(Duration::from_secs(10));
-   }
+   //loop {
+   //   println!("busy work in main thread");
+   //    thread::sleep(Duration::from_secs(10));
+   //}
 
 }

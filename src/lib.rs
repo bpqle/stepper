@@ -90,7 +90,7 @@ impl StepperMotor {
         let state_txt = Arc::clone(&state_txt);
 
         tokio::spawn(async move {
-
+            println!("this is the first task");
             let mut step_values1 = &Self::ALL_OFF;
             let mut step_values3 = &Self::ALL_OFF;
             let mut step: usize = 0;
@@ -125,15 +125,18 @@ impl StepperMotor {
                 m3_handle.set_values(&step_values3.0)
                     .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
                     .unwrap();
-                tokio::time::sleep(Duration::from_millis(*&Self::DT));
+                println!("first task about to sleep");
+                tokio::time::sleep(Duration::from_millis(Self::DT));
                 //let mut file = File::create("foo.txt").unwrap();
             };
         });
+        println!("task completed");
         Ok(())
     }
     pub fn set_state(&mut self, new_state:State) -> Result<(), Error> {
         let mut motor_state = Arc::clone(&self.state);
         let mut motor_state = motor_state.lock().unwrap();
+        println!("Setting new state!");
         match new_state {
             State::Forward => {
                 //*state_txt = String::from("Forward");
@@ -185,13 +188,36 @@ impl Switch_arc {
             switch: Arc::new(Mutex::new(switch))
         })
     }
-    pub async fn switch_ctrl(&mut self, motor: &mut StepperMotor_arc) -> Result<(), Error> {
+}
 
-        let switch_arc = Arc::clone(&self.switch);
-        let motor_arc = Arc::clone(&motor.stepper_motor);
+impl StepperMotorApparatus {
+    pub async fn new(chip1 : &str, chip3 : &str) -> Result<Self, Error> {
+        let mut chip1 = Chip::new(chip1).map_err( |e:GpioError|
+            Error::ChipError {source: e,
+                chip: ChipNumber::Chip1}
+        )?;
+        let mut chip3 = Chip::new(chip3).map_err( |e:GpioError|
+            Error::ChipError {source: e,
+                chip: ChipNumber::Chip3}
+        )?;
+        let stepper_motor = StepperMotor_arc::new(&mut chip1, &mut chip3).await?;
+        let switch = Switch_arc::new(&mut chip1)?;
+        println!("create new finished");
 
+        Ok(StepperMotorApparatus{
+            chip1,
+            chip3,
+            stepper_motor,
+            switch
+        })
+    }
+    pub async fn switch_ctrl(&mut self) -> Result<(), Error> {
+        let mut switch_arc = Arc::clone(&self.switch.switch);
+        let mut motor_arc = Arc::clone(&self.stepper_motor.stepper_motor);
+        println!("switch and motor cloned");
         tokio::spawn(async move {
-            let mut evt_handles = &switch_arc.lock().unwrap().evt_handles;
+            println!("Task spawned");
+            let mut evt_handles = &(switch_arc.lock().unwrap()).evt_handles;
             let mut motor = motor_arc.lock().unwrap();
             let mut pollfds: Vec<PollFd> = evt_handles.iter()
                 .map(|handle| {
@@ -201,6 +227,7 @@ impl Switch_arc {
                     )
                 })
                 .collect();
+            println!("loop starts");
             loop {
                 if poll(&mut pollfds, -1).unwrap() == 0 {
                     println!("Timeout");
@@ -225,30 +252,8 @@ impl Switch_arc {
                     }
                 }
             }
-        });
+        }).await;
         Ok(())
-    }
-}
-
-impl StepperMotorApparatus {
-    pub async fn new(chip1 : &str, chip3 : &str) -> Result<Arc<Mutex<Self>>, Error> {
-        let mut chip1 = Chip::new(chip1).map_err( |e:GpioError|
-            Error::ChipError {source: e,
-                chip: ChipNumber::Chip1}
-        )?;
-        let mut chip3 = Chip::new(chip3).map_err( |e:GpioError|
-            Error::ChipError {source: e,
-                chip: ChipNumber::Chip3}
-        )?;
-        let stepper_motor = StepperMotor_arc::new(&mut chip1, &mut chip3).await?;
-        let switch = Switch_arc::new(&mut chip1)?;
-        let apparatus = Arc::new(Mutex::new(StepperMotorApparatus{
-            chip1,
-            chip3,
-            stepper_motor,
-            switch
-        }));
-        Ok(apparatus)
     }
 }
 
