@@ -15,9 +15,12 @@ use gpio_cdev::{Chip,
 async fn main() {
    let mut stepper = StepperMotorApparatus::new("/dev/gpiochip1", "/dev/gpiochip3").await
        .expect("StepperMotorApparatus Failed");
-    stepper.switch.switch_ctrl(stepper.stepper_motor).await;
+    println!("after first await in main");
+    stepper.switch.switch_ctrl(stepper.stepper_motor).await.unwrap();
+    println!("after second await in main");
     loop {
-        tokio::time::sleep(Duration::from_secs(2));
+        println!("main thread reporting");
+        thread::sleep(Duration::from_secs(2));
     }
 
 }
