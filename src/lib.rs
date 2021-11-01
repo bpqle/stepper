@@ -7,14 +7,16 @@ use gpio_cdev::{Chip,
                 errors::Error as GpioError};
 use tokio::{task::JoinHandle,
             time::Duration,
+            sync::mpsc,
 };
 use thiserror;
-use std::{//thread,
+use std::{num,
           sync::{Arc, Mutex,
                  atomic::{AtomicI8, AtomicUsize, Ordering}}
 };
 use futures::{pin_mut, TryFutureExt, Stream, StreamExt};
 use std::fs::File;
+use tokio::sync::mpsc::{Receiver, Sender};
 
 struct LinesValue([u8; 2]);
 pub struct StepperMotorApparatus {
@@ -22,10 +24,8 @@ pub struct StepperMotorApparatus {
     pub switch: Switch,
 }
 pub struct StepperMotor {
-    motor_1: MultiLineHandle,
-    motor_3: MultiLineHandle,
-    pub state: Arc<Mutex<State>>,
-    pub state_txt: Arc<Mutex<String>>,
+    motor_1: Arc<Mutex<MultiLineHandle>>,
+    motor_3: Arc<Mutex<MultiLineHandle>>,
 }
 pub struct Switch {
     evt_handles: Vec<AsyncLineEventHandle>,
@@ -34,7 +34,7 @@ impl StepperMotor {
     const MOTOR1_OFFSETS: [u32;2] = [13,12];
     const MOTOR3_OFFSETS: [u32;2] = [19,21];
     const ALL_OFF: LinesValue = LinesValue([0,0]);
-    const NUM_HALF_STEPS: usize = 8;
+    const NUM_HALF_STEPS: isize = 8;
     const DT: u64 = 1000000/500;
 
     const HALF_STEPS: [(LinesValue, LinesValue); 8] = [
@@ -48,7 +48,7 @@ impl StepperMotor {
         (LinesValue([0,0]),LinesValue([1,0]))
     ];
 
-    async fn new(chip1: &mut Chip, chip3: &mut Chip) -> Result<Self, Error> {
+    fn new(chip1: &mut Chip, chip3: &mut Chip) -> Result<Self, Error> {
         let motor_1_handle = chip1
             .get_lines(&Self::MOTOR1_OFFSETS)
             .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::MOTOR1_OFFSETS})?
@@ -59,37 +59,45 @@ impl StepperMotor {
             .map_err(|e:GpioError| Error::LinesGetError {source: e, lines: &Self::MOTOR3_OFFSETS})?
             .request(LineRequestFlags::OUTPUT, &[0,0], "stepper")
             .map_err(|e:GpioError| Error::LinesReqError {source: e, lines: &Self::MOTOR3_OFFSETS})?;
-        let state: Arc<Mutex<State>> = Arc::new(Mutex::new(State::default()));
-        let state_txt = Arc::new(Mutex::new(String::from("Stop")));
+
+        let motor_1_handle = Arc::new(Mutex::new(motor_1_handle));
+        let motor_3_handle = Arc::new(Mutex::new(motor_3_handle));
 
         Ok(StepperMotor {
             motor_1: motor_1_handle,
             motor_3: motor_3_handle,
-            state,
-            state_txt,
         })
     }
-    fn run_motor(&mut self) -> Result<(), Error> {
+    async fn run_motor(&mut self, state: State) -> JoinHandle<()> {
+        let motor_1 = Arc::clone(&self.motor_1);
+        let motor_3 = Arc::clone(&self.motor_3);
+        let mut step: isize = 0;
+        let mut i: isize = 0;
 
+        tokio::spawn(async move{
+            let motor_1 = motor_1.lock().unwrap();
+            let motor_3 = motor_3.lock().unwrap();
+            loop {
+                match state {
+                    State::Forward => { i = 1;},
+                    State::Backward => { i = -1;},
+                    State::Stop => { i = 0;}
+                }
+                step = (step + i) % Self::NUM_HALF_STEPS;
+                let ustep = usize::from(step);
+                let step_1_values = &Self::HALF_STEPS[ustep].0;
+                let step_3_values = &Self::HALF_STEPS[ustep].1;
+                motor_1.set_values(&step_1_values.0)
+                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
+                    .unwrap();
+                motor_3.set_values(&step_3_values.0)
+                    .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
+                    .unwrap();
+                //TODO: sleep??
+            }
+        })
     }
-    pub fn set_state(&mut self, new_state: State) -> Result<(), Error> {
-        let mut motor_state = Arc::clone(&self.state);
-        let mut motor_state = motor_state.lock().unwrap();
-
-        match new_state {
-            State::Forward => {
-                //*state_txt = String::from("Forward");
-                *motor_state = State::Forward;
-            }
-            State::Backward => {
-                //*state_txt = String::from("Backward");
-                *motor_state = State::Backward;
-            }
-            State::Stop => {
-                //*state_txt = String::from("Stop");
-                *motor_state = State::Stop;
-            }
-        }
+    pub async fn set_state(&mut self, new_state: State) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -114,7 +122,7 @@ impl Switch {
     }
 }
 impl StepperMotorApparatus {
-    pub async fn new(chip1 : &str, chip3 : &str) -> Result<Self, Error> {
+    pub fn new(chip1 : &str, chip3 : &str) -> Result<Self, Error> {
         let mut chip1 = Chip::new(chip1).map_err( |e:GpioError|
             Error::ChipError {source: e,
                 chip: ChipNumber::Chip1}
@@ -123,8 +131,9 @@ impl StepperMotorApparatus {
             Error::ChipError {source: e,
                 chip: ChipNumber::Chip3}
         )?;
-        let stepper_motor = StepperMotor::new(&mut chip1, &mut chip3).await?;
+        let stepper_motor = StepperMotor::new(&mut chip1, &mut chip3)?;
         let switch = Switch::new(&mut chip1)?;
+
         Ok(StepperMotorApparatus{
             stepper_motor,
             switch,
@@ -135,15 +144,25 @@ impl StepperMotorApparatus {
             loop {
                 tokio::select! {
                     event = self.switch.evt_handles[0].next() => {
-                        match event.unwrap().event_type() {
-                            EventType::RisingEdge => self.stepper_motor.set_state(State::Forward).unwrap(),
-                            EventType::FallingEdge => self.stepper_motor.set_state(State::Stop).unwrap()
+                        match event.unwrap().unwrap().event_type() {
+                            EventType::RisingEdge => {
+                                tokio::select! {
+                                    _ = &self.stepper_motor.set_state(State::Forward) => {println!("Switch not released, task expired??")}
+                                    _ = self.switch.evt_handles[0].next() => {println!("Switch released!")}
+                                }
+                            }
+                            _ => {println!("Problem")}
                         }
                     }
                     event = self.switch.evt_handles[1].next() => {
-                        match event.unwrap().event_type() {
-                            EventType::RisingEdge => self.stepper_motor.set_state(State::Backward).unwrap(),
-                            EventType::FallingEdge => self.stepper_motor.set_state(State::Stop).unwrap()
+                        match event.unwrap().unwrap().event_type() {
+                            EventType::RisingEdge => {
+                                tokio::select! {
+                                    _ = &self.stepper_motor.set_state(State::Backward) => {println!("Switch not released, task expired??")}
+                                    _ = self.switch.evt_handles[1].next() => {println!("Switch released!")}
+                                }
+                            }
+                            _ => {println!("Problem")}
                         }
                     }
                 }
