@@ -63,6 +63,12 @@ impl StepperMotor {
 
         let _motor_thread  = thread::spawn(move || {
             let mut step: usize = 0;
+            motor_1_handle.set_values(&Self::ALL_OFF.0)
+                .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR1_OFFSETS })
+                .unwrap();
+            motor_3_handle.set_values(&Self::ALL_OFF.0)
+                .map_err(|e: GpioError| Error::LinesSetError { source: e, lines: &Self::MOTOR3_OFFSETS })
+                .unwrap();
             loop {
                 match state_clone.load(Ordering::Relaxed) {
                     1 => {
