@@ -1,4 +1,3 @@
-//use gpio_cdev::{Chip, LineRequestFlags};
 use stepper::{StepperMotorApparatus};
 use std::time::Duration;
 use std::thread;
@@ -17,7 +16,7 @@ async fn main() {
     info!("Switch Control started");
     loop {
         info!("Main thread reporting");
-        thread::sleep(Duration::from_secs(5));
+        thread::sleep(Duration::from_secs(10));
     }
 
 }

@@ -72,6 +72,7 @@ impl StepperMotor {
             loop {
                 match state_clone.load(Ordering::Relaxed) {
                     1 => {
+                        println!("1");
                         step = (step + 1) % Self::NUM_HALF_STEPS;
                         let step_1_values = &Self::HALF_STEPS[step].0;
                         let step_3_values = &Self::HALF_STEPS[step].1;
@@ -93,6 +94,7 @@ impl StepperMotor {
                             .unwrap();
                     },
                     2 => {
+                        println!("2");
                         step = (step - 1) % Self::NUM_HALF_STEPS;
                         let step_1_values = &Self::HALF_STEPS[step].0;
                         let step_3_values = &Self::HALF_STEPS[step].1;
@@ -171,15 +173,24 @@ impl StepperMotorApparatus {
             loop {
                 tokio::select! {
                     event = &mut self.switch.switch_line_14.next() => {
+
                         match event.unwrap().unwrap().event_type() {
-                            EventType::RisingEdge => {&self.stepper_motor.set_state(State::Stop);}
-                            EventType::FallingEdge => {&self.stepper_motor.set_state(State::Forward);}
+                            EventType::RisingEdge => {
+                                println!("Switch 14 pressed")
+                                &self.stepper_motor.set_state(State::Stop);}
+                            EventType::FallingEdge => {
+                                println!("Switch 14 depressed")
+                                &self.stepper_motor.set_state(State::Forward);}
                         }
                     }
                     event = &mut self.switch.switch_line_15.next() => {
                         match event.unwrap().unwrap().event_type() {
-                            EventType::RisingEdge => {&self.stepper_motor.set_state(State::Stop);}
-                            EventType::FallingEdge => {&self.stepper_motor.set_state(State::Backward);}
+                            EventType::RisingEdge => {
+                                println!("Switch 15 pressed")
+                                &self.stepper_motor.set_state(State::Stop);}
+                            EventType::FallingEdge => {
+                                println!("Switch 15 depressed")
+                                &self.stepper_motor.set_state(State::Backward);}
                         }
                     }
                 }
