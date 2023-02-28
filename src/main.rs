@@ -1,4 +1,4 @@
-use stepper::{StepperMotorApparatus};
+use motor_test::{StepperMotorApparatus};
 use std::time::Duration;
 use std::thread;
 use simple_logger::SimpleLogger;
