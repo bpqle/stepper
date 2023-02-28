@@ -32,7 +32,7 @@ impl StepperMotor {
     const MOTOR3_OFFSETS: [u32;2] = [19,21];
     const ALL_OFF: LinesValue = LinesValue([0,0]);
     const NUM_HALF_STEPS: usize = 8;
-    const DT: u64 = 1000000/500;
+    const DT: u64 = 200;
 
     const HALF_STEPS: [(LinesValue, LinesValue); 8] = [
         (LinesValue([0,1]),LinesValue([1,0])),
@@ -103,7 +103,7 @@ impl StepperMotor {
                     },
                     _ => {warn!("Invalid state read"); continue}
                 };
-                thread::sleep(Duration::from_micros(Self::DT));
+                thread::sleep(Duration::from_millis(Self::DT));
             }
         });
 
